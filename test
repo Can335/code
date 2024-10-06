@@ -1,0 +1,616 @@
+--!strict
+local LocalizationService = game:GetService("LocalizationService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+
+local SignalUtil = require(ReplicatedStorage.Packages.signal)
+local Remote = require(ReplicatedStorage.Packages.bytenet)
+local QueueUtil = require(ReplicatedStorage.Packages.queue)
+local Trove = require(ReplicatedStorage.Packages.trove)
+
+
+    
+
+type Signal = SignalUtil.Signal<any>
+
+type Input = {Enum.KeyCode| Enum.UserInputType} 
+
+type read<Enum> = (Enum) -> (string)
+
+type QueueListFunction = {Arg: {any}, Fn: (any...) -> (any...)}
+
+type KeyDictionaryIndex = {Action: Action<string>, Dependency_Disable: {Input}, Dependency_CrucialBlocking : {Input},Active_Allowed: boolean,Type: "Hold"|"Click"|"ClickTime", Active: boolean, Signal: Signal, Time: number|nil, Condition: {[number]: (any...) -> (any...)}}
+
+
+type Action<string> = {
+
+"Sprinting" | "Walking"
+
+}
+
+export type KeyClass<T> = {
+
+KeyDictionary: {
+
+[Input] : {Action: Action<string>, Dependency_Disable: {Input}, Dependency_CrucialBlocking : {Input},Active_Allowed: boolean,Type: "Hold"|"Click"|"ClickTime", Active: boolean, Signal: Signal, Time: number|nil, Condition: {[number]: (any...) -> (any...)}}
+
+},
+
+TaskQueue: QueueUtil.Queue<any>,
+ThreadActiveQueue: boolean,
+
+
+
+New: () -> KeyClass<T>,
+
+ChangeKeys: (self: KeyClass<T>, OldDictionary: {[Action<string>]: Input}, NewDictionary : {[Input]: Action<string>}) -> (),
+
+NewInput: (self: KeyClass<T>, Input: Input) -> (),
+
+ProccessInput: (self: KeyClass<T>,Input: Input, Tab:KeyDictionaryIndex) -> (),
+
+ProccessInputFalse: (self: KeyClass<T>, Input: Input, Tab:KeyDictionaryIndex) -> (),
+
+ProccessInputTrue: (self: KeyClass<T>, Input: Input, Tab:KeyDictionaryIndex) -> (),
+
+SendSignal: (self: KeyClass<T>, Tab: KeyDictionaryIndex, Bool: boolean, Input: Input) -> (),
+
+ReturnAllSignals: (self: KeyClass<T>) -> ({[Action<string>]: Signal}),
+
+InsertQueue: (self:KeyClass<T>) -> (),
+
+StartReadingUIS: (self:KeyClass<T>) -> (),
+
+KeysAllowingUse: boolean,
+
+AlreadyCheckedNewReplacmentMainIndex : {Input},
+AlreadyCheckedOldReplacmentMainIndex : {Input},
+
+AlreadyCheckedNewReplacmentMainIndexTemp : {Input},
+AlreadyCheckedOldReplacmentMainIndexTemp : {Input},
+
+NewKeyReplacment : KeyDictionaryIndex,
+OldKeyReplacment : KeyDictionaryIndex,
+
+OldKeyReplacmentKey: Input,
+NewKeyIndexReplace: Input,
+OldKeyIndexReplace: Input
+
+
+}
+
+local KeyClass = {} :: KeyClass<any>
+
+KeyClass.__index = KeyClass
+
+function Execute(self: KeyClass<any>,Token: "P" | "PF" | "PT" | "N" | "S", ...)
+
+if Token == "P" then
+
+self:ProccessInput(...)
+elseif Token == "PF" then
+
+self:ProccessInputFalse(...)
+
+elseif Token == "PT" then
+
+self:ProccessInputTrue(...)
+elseif Token == "N" then
+
+    self:NewInput(...)
+    elseif Token == "S" then
+
+self:SendSignal(...)
+
+end    
+    
+end
+
+
+
+
+
+
+function KeyClass.New( KeyDictionary : {[Input]: KeyDictionaryIndex}) : KeyClass<any>
+    
+local self : KeyClass<any> = setmetatable({}, KeyClass :: KeyClass<any>):: any
+
+self.KeyDictionary = KeyDictionary
+self.KeysAllowingUse = false
+
+
+self.AlreadyCheckedNewReplacmentMainIndex = {}
+self.AlreadyCheckedNewReplacmentMainIndexTemp = {}
+
+self.AlreadyCheckedOldReplacmentMainIndex = {}
+self.AlreadyCheckedOldReplacmentMainIndexTemp = {}
+
+self.NewKeyReplacment = nil
+self.OldKeyReplacment = nil
+
+self.NewKeyIndexReplace = nil
+self.OldKeyIndexReplace = nil
+
+self.OldKeyReplacmentKey = nil
+
+self.TaskQueue = QueueUtil.new({})
+self.ThreadActiveQueue = false
+
+return self :: KeyClass<any>
+end
+
+
+function KeyClass:InsertQueue(Token : "P" | "PT" | "PF" | "N"|"S", ...:any)
+    
+self.TaskQueue.pushBack(self.TaskQueue,{Arg = Token, Fn = Execute, Varadic = ...})
+
+if self.ThreadActiveQueue == true then
+return
+end   
+
+self.ThreadActiveQueue = true
+
+repeat
+    
+local QueueIndex = self.TaskQueue.list[1]
+QueueIndex.Fn(QueueIndex.Arg,QueueIndex.Varadic)
+task.wait()
+
+self.TaskQueue.remove(self.TaskQueue,1)
+
+task.wait()
+
+until self.TaskQueue.list[1] == nil
+
+self.ThreadActiveQueue = false
+return
+end
+
+
+function KeyClass:NewInput(Input: Input)
+    
+if self.KeyDictionary[Input].Active_Allowed == false or self.KeysAllowingUse == false then
+ return
+end    
+
+self:InsertQueue("P",Input, self.KeyDictionary[Input])
+
+end
+
+function KeyClass:ProccessInput(Input: Input, Tab:KeyDictionaryIndex)
+    
+local Type = Tab.Type
+local Time = Tab.Time or nil
+
+if Tab.Active == false then
+
+self:InsertQueue("PT", Input, Tab)
+
+else
+
+self:InsertQueue("PF", Input, Tab)
+
+end   
+
+end
+
+
+function KeyClass:ProccessInputTrue(Input: Input, Tab:KeyDictionaryIndex)
+    
+--[[
+
+@Params check type
+@Params check time
+
+@Params check curcial_blocking keys by looping
+@Paramscheck crucial_condition by looping
+@Params check Dependency disable by looping
+
+]]
+
+local Type = Tab.Type
+local Time = Tab.Time
+
+local Dependency_Disable = Tab.Dependency_Disable or nil
+local Dependency_CrucialBlocking = Tab.Dependency_CrucialBlocking or nil
+local Condition = Tab.Condition or nil
+
+if Dependency_CrucialBlocking ~= nil then
+    
+    for IndexNumber, BlockingKey in pairs(Dependency_CrucialBlocking) do
+    
+        if self.KeyDictionary[BlockingKey].Active == true then
+        return
+         end   
+        
+        end
+
+end
+
+
+if Condition ~= nil then
+    
+    for IndexNumber, Condition in pairs(Condition) do
+    
+        if Condition() == true then
+        return
+         end   
+        
+        end
+
+end
+
+
+if Dependency_Disable ~= nil then
+    
+    for IndexNumber, DependencyKeys in pairs(Dependency_Disable) do
+    
+        if self.KeyDictionary[DependencyKeys].Active == true then
+            self.KeyDictionary[DependencyKeys].Active = false
+self:InsertQueue("PF", DependencyKeys, self.KeyDictionary[DependencyKeys])
+
+         end   
+        
+        end
+
+end
+
+self:InsertQueue("S", Tab, true, Input)
+Tab.Active = true
+
+end
+
+
+function KeyClass:ProccessInputFalse(Input: Input, Tab:KeyDictionaryIndex)
+    
+
+
+Tab.Active = false
+
+if Tab.Type ~= "ClickTime" then
+    
+self:InsertQueue("S",Tab, false, Input)
+
+end
+
+return
+
+end
+
+
+function KeyClass:SendSignal(Tab: KeyDictionaryIndex, boolean: boolean, Input: Input)
+    
+if Tab.Type == "ClickTime" and boolean == true then
+
+Tab.Signal:Fire(boolean)
+
+task.wait(Tab.Time)
+
+Tab.Signal:Fire(false)
+self:InsertQueue("PF", Input,Tab)
+return
+end    
+
+if Tab.Type == "Click" or Tab.Type == "Hold" then
+
+Tab.Signal:Fire(boolean)
+
+end    
+
+end
+
+
+
+--EndPoint of KeyClass:ChangeKeys Function
+function KeyClass:ChangeKeys(OldDictionary, NewDictionary)
+    self.KeysAllowingUse = false
+--[[
+
+@Params Changing The Main Key Index
+@Params Loop through changes
+@Params Loop through olddictionary to get self.OldKeyReplacmentKey by Getting the NewKeys Old assigned Action (if exist and not nil)
+
+
+]]
+print(self.KeyDictionary, "BEFORE")
+
+--EndPoint Of Changes, Actions Loop
+for Changes, Actions in pairs(NewDictionary) do
+    
+
+self.NewKeyIndexReplace = Changes
+self.OldKeyIndexReplace = OldDictionary[Actions]
+
+--EndPoint of ActionsOld,BeforeChangeKey Loop
+for ActionsOld, BeforeChangeKey in pairs(OldDictionary) do
+
+    --EndPoint Of BeforeChangeKey == self.Newkeyindexreplace statment
+if BeforeChangeKey == self.NewKeyIndexReplace then
+
+    --EndPoint Of changes_A actions_A newdiciontary Loop
+for Changes_A, Actions_A in pairs(NewDictionary) do
+    
+--EndPoint of Actionsold == actions_A statment
+if ActionsOld == Actions_A then
+
+self.OldKeyReplacmentKey = Changes_A
+
+end    
+--EndPoint of Actionsold == actions_A statment
+
+end
+    --EndPoint Of changes_A actions_A newdiciontary Loop
+
+end
+    --EndPoint Of BeforeChangeKey == self.Newkeyindexreplace statment
+
+end
+--EndPoint of ActionsOld,BeforeChangeKey Loop
+
+
+self.NewKeyReplacment = table.clone(self.KeyDictionary[self.OldKeyIndexReplace])
+self.OldKeyReplacment = table.clone(self.KeyDictionary[self.NewKeyIndexReplace]) or nil
+
+task.wait()
+
+--EndPoint of self.NewKeyReplacment ~= nil and table.find(self.alreadycheckednewreplacmentmainindex, newkeyindexreplace) == nil statment
+if self.NewKeyReplacment ~= nil and table.find(self.AlreadyCheckedNewReplacmentMainIndex,self.NewKeyIndexReplace) == nil then
+    
+    self.KeyDictionary[self.NewKeyIndexReplace] = nil
+
+    task.wait()
+    
+    self.KeyDictionary[self.NewKeyIndexReplace] = self.NewKeyReplacment
+    
+
+end
+--EndPoint of self.NewKeyReplacment ~= nil and table.find(self.alreadycheckednewreplacmentmainindex, newkeyindexreplace) == nil statment
+
+
+table.insert(self.AlreadyCheckedNewReplacmentMainIndex,self.NewKeyIndexReplace)
+
+--EndPoint self.oldkeyreplacment ~= nil and table.find(self.alreadycheckedoldreplacmentmainindex,self.oldkeyindexreplace) == nil statment
+if self.OldKeyReplacment ~= nil and table.find(self.AlreadyCheckedOldReplacmentMainIndex, self.OldKeyIndexReplace) == nil then
+
+    self.KeyDictionary[self.OldKeyIndexReplace] = nil    
+
+self.KeyDictionary[self.OldKeyReplacmentKey] = self.OldKeyReplacment
+table.insert(self.AlreadyCheckedOldReplacmentMainIndex,self.OldKeyIndexReplace )
+else
+--Just Make the old index nil because it has no dependency or anything to do
+    self.KeyDictionary[self.OldKeyIndexReplace] = nil
+
+end 
+--EndPoint self.oldkeyreplacment ~= nil and table.find(self.alreadycheckedoldreplacmentmainindex,self.oldkeyindexreplace) == nil statment
+
+task.wait()
+
+self.NewKeyIndexReplace = nil
+self.OldKeyIndexReplace = nil
+self.NewKeyReplacment = nil
+self.OldKeyReplacmentKey = nil
+self.OldKeyReplacment = nil
+
+end
+--EndPoint Of Changes, Actions Loop
+
+task.wait()
+
+self.AlreadyCheckedNewReplacmentMainIndex = {}
+self.AlreadyCheckedOldReplacmentMainIndex = {}
+self.OldKeyIndexReplace = nil
+self.NewKeyIndexReplace = nil
+self.OldKeyReplacmentKey = nil
+
+task.wait()
+
+--[[
+
+End of FirstPart
+
+@Params Loop Through Changes
+@Params Loop Through KeyDictionary
+@Params Loop Through OldChanges to get Key
+
+]]
+
+--EndPoint of for Changes_B, Actions_B Loop
+for Changes_B, Actions_B in pairs(NewDictionary) do
+    
+self.NewKeyIndexReplace = Changes_B
+self.OldKeyIndexReplace = OldDictionary[Actions_B]
+
+print(self.NewKeyIndexReplace, self.OldKeyIndexReplace)
+
+--EndPoint of for ActionsOld_A , OldChanges_A Loop
+for ActionsOld_A, OldChanges_A in pairs(OldDictionary) do
+    
+--EndPoint of OldChanges_A == self.NewKeyIndexReplace statment
+if OldChanges_A == self.NewKeyIndexReplace then
+
+--EndPoint of Changes_C Actions_C Loop
+for Changes_C , Actions_C in pairs(NewDictionary) do
+    
+--EndPoint of Actions_C == ActionsOld_A Statement    
+if Actions_C == ActionsOld_A then
+
+self.OldKeyReplacmentKey = Changes_C
+print(self.OldKeyReplacmentKey)
+end    
+--EndPoint of Actions_C == ActionsOld_A Statement  
+
+end
+--EndPoint of Changes_C Actions_C Loop
+
+end    
+--EndPoint of OldChanges_A == self.NewKeyIndexReplace statment
+
+end
+--EndPoint of for ActionsOld_A , OldChanges_A Loop
+
+--EndPoint KeyAssignedToKeyDictionaryIndex, Tab in paris self.keydictionary
+for KeyAssignedToKeyDictionaryIndex, Tab : KeyDictionaryIndex in pairs(self.KeyDictionary) do
+    
+--EndPoint IndexingDisable, KeysDependencyDisable in tab.dependency_disable
+for IndexingDisable, KeysDependencyDisable in pairs(Tab.Dependency_Disable) do
+
+--EndPoint KeysDependencyDisable == self.NewKeyIndexReplace statement
+if KeysDependencyDisable == self.NewKeyIndexReplace then
+    print("replacing an new key")
+        --EndPoint table.find(self.alreadycheckedoldreplacmentmainindex, self.oldkeyindexreplace) == nil statemet
+if table.find(self.AlreadyCheckedOldReplacmentMainIndex, self.OldKeyIndexReplace) == nil then
+
+Tab.Dependency_Disable[IndexingDisable] = self.OldKeyReplacmentKey
+
+end
+--EndPoint table.find(self.alreadycheckedoldreplacmentmainindex, self.oldkeyindexreplace) == nil statemet
+
+--EndPoint Table.find(seld.alreadycheckedoldreplacementMainIndexTemp, self.OldKeyIndexReplace) == nil statement
+if table.find(self.AlreadyCheckedOldReplacmentMainIndexTemp, self.OldKeyIndexReplace) == nil then
+    
+
+    table.insert(self.AlreadyCheckedOldReplacmentMainIndexTemp, self.OldKeyReplacmentKey)
+    table.insert(self.AlreadyCheckedNewReplacmentMainIndexTemp, self.OldKeyReplacmentKey)
+    
+
+
+
+end
+
+--EndPoint Table.find(seld.alreadycheckedoldreplacementMainIndexTemp, self.OldKeyIndexReplace) == nil statement
+
+--EndPoint ElseIf keysdependencydisable == seld.newkeyindexreplace statement
+elseif KeysDependencyDisable == self.OldKeyIndexReplace then
+print("replacing an old key")
+    --EndPoint table.find(self.alreadycheckednewreplacmentmainindex, self.newkeyindexreplace) == nil statemet
+if table.find(self.AlreadyCheckedNewReplacmentMainIndex, self.NewKeyIndexReplace) == nil then
+
+    Tab.Dependency_Disable[IndexingDisable] = self.NewKeyIndexReplace
+
+end
+    --EndPoint table.find(self.alreadycheckednewreplacmentmainindex, self.newkeyindexreplace) == nil statemet
+
+        --EndPoint Table.find(seld.alreadycheckedoldreplacementMainIndexTemp, self.Newkeyindexreplace) == nil statement
+    if table.find(self.AlreadyCheckedNewReplacmentMainIndexTemp, self.NewKeyIndexReplace) == nil then
+    
+
+        table.insert(self.AlreadyCheckedOldReplacmentMainIndexTemp, self.NewKeyIndexReplace)
+    
+    
+    
+    end
+    --EndPoint Table.find(seld.alreadycheckedoldreplacementMainIndexTemp, self.Newkeyindexreplace) == nil statement
+
+end    
+--EndPoint ElseIf keysdependencydisable == seld.oldindexReplace statement
+--EndPoint KeysDependencyDisable == self.NewKeyIndexReplace statement
+
+end
+--EndPoint IndexingDisable, KeysDependencyDisable in tab.dependency_disable
+
+end
+--EndPoint KeyAssignedToKeyDictionaryIndex, Tab in paris self.keydictionary
+
+self.OldKeyIndexReplace = nil
+self.NewKeyIndexReplace = nil
+self.OldKeyReplacmentKey = nil
+
+--EndPoint self.alreadycheckednewreplacmentmainindextemp[1] ~= nil statement
+if self.AlreadyCheckedNewReplacmentMainIndexTemp[1] ~= nil then
+
+table.insert(self.AlreadyCheckedNewReplacmentMainIndex,self.AlreadyCheckedNewReplacmentMainIndexTemp[1])
+
+task.wait()
+
+table.remove(self.AlreadyCheckedNewReplacmentMainIndexTemp,1)
+
+end    
+--EndPoint self.alreadycheckednewreplacmentmainindextemp[1] ~= nil statement
+
+
+--EndPoint self.AlreadycheckedoldreplacmentMainindexTemp[1] ~= nil statement
+if self.AlreadyCheckedOldReplacmentMainIndexTemp[1] ~= nil then
+
+    table.insert(self.AlreadyCheckedOldReplacmentMainIndex,self.AlreadyCheckedOldReplacmentMainIndexTemp[1])
+    
+    task.wait()
+    
+    table.remove(self.AlreadyCheckedOldReplacmentMainIndexTemp,1)
+    
+    end    
+
+--EndPoint self.AlreadycheckedoldreplacmentMainindexTemp[1] ~= nil statement
+
+
+end
+--EndPoint of for Changes_B, Actions_B Loop
+
+self.AlreadyCheckedNewReplacmentMainIndex = nil
+self.AlreadyCheckedOldReplacmentMainIndex = nil
+
+print(self.KeyDictionary, "After")
+
+self.KeysAllowingUse = false
+end
+--EndPoint of KeyClass:ChangeKeys Function
+
+
+function KeyClass:ReturnAllSignals()
+    
+local AllSignals = {}
+
+for KeyDictionaryIndexKey, KeyDictionaryIndex: KeyDictionaryIndex in pairs(self.KeyDictionary) do
+    
+AllSignals[KeyDictionaryIndex.Action] = KeyDictionaryIndex.Signal 
+
+end
+
+task.wait()
+return AllSignals
+
+end
+
+function KeyClass:StartReadingUIS()
+    
+UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
+    
+task.wait()
+
+if self.KeyDictionary[input.KeyCode] ~= nil then
+    
+self:InsertQueue("N", input.KeyCode)
+
+end
+
+if self[input.UserInputType] ~=nil then
+    
+self:InsertQueue("N", input.UserInputType)
+
+end
+
+end)
+
+
+UserInputService.InputEnded:Connect(function(input, gameProcessedEvent)
+    
+    task.wait()
+
+
+if self.KeyDictionary[input.KeyCode] ~= nil then
+    
+self:InsertQueue("N", input.KeyCode)
+
+end
+
+if self[input.UserInputType] ~=nil then
+    
+self:InsertQueue("N", input.UserInputType)
+
+end
+
+
+end)
+
+end
+
+return KeyClass
